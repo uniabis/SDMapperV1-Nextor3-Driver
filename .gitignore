@@ -1,0 +1,7 @@
+# Build outputs
+/bin/
+/tmp/
+
+# Editors / IDEs
+.vs/
+.vscode/

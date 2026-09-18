@@ -1,0 +1,72 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# The workflow only checks out the repository and uploads a build artifact
+# (which doesn't use the token's repo scopes), so read access to the contents
+# is all the GITHUB_TOKEN needs.
+permissions:
+  contents: read
+
+# The Nextor dev Docker image supplies the whole toolchain (N80, mknexrom), the
+# Nextor SDK and the kernel base files, so CI just runs the build inside it via
+# docker-build.sh — no .NET, Nestor80 download, Nextor checkout, mknexrom build
+# or kernel-base build needed.
+#
+# Requirements:
+#   * The image must be public (it is pulled without authentication). If it is
+#     private, add a `docker/login-action` step before the build using a PAT
+#     with `read:packages` (the default GITHUB_TOKEN can't read a package in
+#     another repository).
+#   * The image tag is the kernel version this driver targets (the image's
+#     `latest` tag only tracks stable kernel releases, so it can't be used
+#     while targeting a prerelease). Bump NEXTOR_IMAGE below when moving to a
+#     new kernel version, together with the external/Nextor submodule pin.
+env:
+  NEXTOR_IMAGE: ghcr.io/konamiman/nextor-dev:3.0.0-beta2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this driver
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # The image provides the SDK and kernel base files; docker-build.sh runs
+      # build-all.sh inside it, which builds against every base-file variant
+      # the image ships, writing the ROMs to bin/ owned by the runner user.
+      - name: Build driver ROMs against every kernel base variant
+        run: ./docker-build.sh --image "$NEXTOR_IMAGE" --variant all
+
+      # Two ROMs (1-slot, 2-slots) for each of the two kernel base
+      # variants (default and NO_UNDOC): 4 in all. No Recovery or ROM-disk
+      # images: SDMapper V1 has neither a MegaFlashROM recovery header nor
+      # spare flash for a ROM disk.
+      - name: Confirm all 4 ROMs were produced
+        run: |
+          set -e
+          n=0
+          for base in "" .NO_UNDOC; do
+            for rom in .1-slot .2-slots; do
+              f="$(ls bin/Nextor-*.SDMapperV1${rom}${base}.ROM 2>/dev/null || true)"
+              [ -n "$f" ] && [ -s "$f" ] || { echo "Missing or empty: bin/Nextor-*.SDMapperV1${rom}${base}.ROM"; exit 1; }
+              n=$((n + 1))
+            done
+          done
+          total=$(ls bin/*.ROM | wc -l)
+          [ "$total" -eq 4 ] || { echo "Expected 4 ROMs in bin/, found $total"; ls bin; exit 1; }
+          echo "OK: $n ROMs present and non-empty"
+
+      - name: Upload ROMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdmapperv1-roms
+          path: bin/Nextor-*.SDMapperV1*.ROM
